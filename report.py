@@ -6,8 +6,8 @@ from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe
 # Import our new analysis functions from the other script
 from analysis import process_flight_data, predict_delay_for_new_time, find_top_cascading_flights
 
-print("--- EXECUTING THE FINAL VERSION OF MAKE_REPORT.PY SCRIPT ---")
-print("Running initial analysis to prepare data for the agent...")
+print("--- EXECUTING THE FINAL POLISHED SCRIPT ---")
+print("Running initial analysis...")
 
 # 1. Run the analysis to get the processed dataframes
 full_df, avg_delay_df = process_flight_data()
@@ -17,44 +17,48 @@ busiest_df = pd.read_csv('data/busiest_hours.csv')
 best_df = pd.read_csv('data/best_hours.csv')
 
 print("\nInitializing AI Agents...")
-# Initialize the local Llama3 model
 llm = OllamaLLM(model="llama3", temperature=0)
 
 # 2. Create the specialized "Data Analyst" agent
-# This agent is given the dataframes and knows how to query them.
 pandas_agent = create_pandas_dataframe_agent(
     llm=llm,
-    df=[busiest_df, best_df, avg_delay_df], # Pass a list of dataframes
+    df={
+        "busiest_hours_data": busiest_df,
+        "best_hours_data": best_df,
+        "average_delay_data": avg_delay_df
+    },
     verbose=True,
-    allow_dangerous_code=True
+    allow_dangerous_code=True,
+    # Add a clear instruction to provide a final answer
+    agent_executor_kwargs={"handle_parsing_errors": True}
 )
 
 # 3. Define the list of tools for our main "Manager" agent
 tools = [
-    # Give the Manager agent access to the Data Analyst agent as a tool
     Tool(
         name="Flight Data Analysis",
-        func=pandas_agent.invoke, # Use the specialized agent's invoke method
+        # --- MODIFICATION 1: Add "Final Answer:" prefix to the output ---
+        func=lambda q: "Final Answer: " + pandas_agent.invoke({"input": q})['output'],
         description="""
-        Use this tool for any general questions about flight data, like finding the busiest or best hours, 
-        calculating averages, or counting flights from the provided dataframes.
-        Example: 'What are the 3 busiest hours?'
+        Use this tool for any questions about analyzing flight data to find the busiest, best, or freest (least busy) times.
+        The input to this tool MUST be the full, original question from the user.
         """
     ),
     Tool(
         name="Predict Schedule Impact",
-        # NEW, MORE ROBUST LINE
-        func=lambda hour_str: predict_delay_for_new_time(int("".join(filter(str.isdigit, hour_str))), avg_delay_df),
+        # --- MODIFICATION 2: Add "Final Answer:" prefix to the output ---
+        func=lambda hour_str: "Final Answer: " + predict_delay_for_new_time(int("".join(filter(str.isdigit, hour_str))), avg_delay_df),
         description="Use this to predict the delay if a flight is moved to a new hour. The input is a single integer representing the hour (e.g., '14')."
     ),
     Tool(
         name="Find Cascade Flights",
-        func=lambda empty_str: str(find_top_cascading_flights(full_df)), # Convert output to string
+        # --- MODIFICATION 3: Add "Final Answer:" prefix to the output ---
+        func=lambda empty_str: "Final Answer: \n" + str(find_top_cascading_flights(full_df)),
         description="Use this to find flights that cause major knock-on (cascading) delays. This tool takes no input."
     )
 ]
 
-# 4. Initialize our main "Manager" agent with the complete tool list
+# 4. Initialize our main agent (we no longer need the complex suffix)
 agent = initialize_agent(
     tools,
     llm,
@@ -79,7 +83,7 @@ def main():
     while True:
         try:
             query = input(">> ")
-            if query.lower().strip() in ["exit", "quit", "q"]:
+            if query.lower().strip() in ["exit", "quit", 'q']:
                 print("Goodbye!")
                 break
             
