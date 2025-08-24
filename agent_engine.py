@@ -1,70 +1,71 @@
 import pandas as pd
+import json
 from langchain_ollama import OllamaLLM
 from langchain.agents import AgentType, initialize_agent, Tool
+from analysis import (predict_delay_for_new_time, find_top_cascading_flights, 
+                      optimize_flight_schedule, parse_delay_from_string,
+                      run_system_wide_optimization, process_flight_data)
 
-# Import our new analysis functions from the other script
-from analysis import process_flight_data, predict_delay_for_new_time, find_top_cascading_flights
-
-def load_agent():
-    print("--- LOADING FINAL AGENT ENGINE ---")
+def load_agent_and_precomputed_data():
+    """
+    This is the main function that loads all data and initializes the agent.
+    """
+    print("--- LOADING LIGHTWEIGHT AGENT ENGINE ---")
     
-    # 1. Run the analysis and load all necessary data
-    full_df, avg_delay_df = process_flight_data()
+    # Load all data from files, no heavy computation on startup
+    full_df = pd.read_csv('data/bom_week_flights_synthetic.csv')
+    full_df['sched_time_local'] = pd.to_datetime(full_df['sched_time_local'])
+    avg_delay_df = pd.read_csv('data/avg_delay_by_hour.csv')
     busiest_df = pd.read_csv('data/busiest_hours.csv')
     best_df = pd.read_csv('data/best_hours.csv')
+    
+    # Load the pre-computed optimization summary from the JSON file
+    try:
+        with open('data/optimization_summary.json', 'r') as f:
+            optimization_summary = json.load(f)
+    except FileNotFoundError:
+        print("WARNING: optimization_summary.json not found. Running optimization now...")
+        # Fallback: run optimization if the file doesn't exist
+        optimization_summary = run_system_wide_optimization(full_df, avg_delay_df)
+
 
     print("\nInitializing AI Agent...")
     llm = OllamaLLM(model="llama3", temperature=0)
 
-    # 2. Define simple, fast Python functions to be used as tools
-    def get_busiest_hours(n_str: str = "5") -> str:
-        """Returns the top N busiest hours."""
-        try:
-            n = int("".join(filter(str.isdigit, n_str)))
-            return busiest_df.head(n).to_string()
-        except:
-            return busiest_df.head(5).to_string()
-
-    def get_best_hours(n_str: str = "5") -> str:
-        """Returns the top N best (least delayed) hours."""
-        try:
-            n = int("".join(filter(str.isdigit, n_str)))
-            return best_df.head(n).to_string()
-        except:
-            return best_df.head(5).to_string()
-
-    # 3. Define the list of tools using our new, fast functions
     tools = [
-        Tool(
-            name="Get Busiest Hours",
-            func=get_busiest_hours,
-            description="Use this to find the busiest hours with the most flight operations. Input can be the number of hours to show, e.g., '3'."
-        ),
-        Tool(
-            name="Get Best Hours",
-            func=get_best_hours,
-            description="Use this to find the best (least busy or least delayed) hours to schedule a flight. Input can be the number of hours to show, e.g., '5'."
-        ),
-        Tool(
-            name="Predict Schedule Impact",
-            func=lambda hour_str: predict_delay_for_new_time(int("".join(filter(str.isdigit, hour_str))), avg_delay_df),
-            description="Use this to predict the delay if a flight is moved to a new hour. The input must be the hour to predict for, e.g., '14'."
-        ),
-        Tool(
-            name="Find Cascade Flights",
-            func=lambda empty_str: find_top_cascading_flights(full_df).to_string(),
-            description="Use this to find the top 10 flights that cause the most significant knock-on (cascading) delays. Takes no input."
-        )
+        Tool(name="Get Busiest Hours",
+             func=lambda n="5": busiest_df.head(int("".join(filter(str.isdigit, n))) if n else 5).to_markdown(),
+             description="Use for finding the busiest hours. Input can be the number of hours to show."),
+        Tool(name="Get Best Hours",
+             func=lambda n="5": best_df.head(int("".join(filter(str.isdigit, n))) if n else 5).to_markdown(),
+             description="Use for finding the best (least delayed) hours. Input can be the number of hours to show."),
+        Tool(name="Predict Schedule Impact",
+             func=lambda inputs: predict_delay_for_new_time(
+                 flight_id=inputs.split(',')[0].strip(), 
+                 new_time_hour=int("".join(filter(str.isdigit, inputs.split(',')[1]))), 
+                 full_flight_df=full_df),
+             description="Use for a 'what-if' analysis on a SPECIFIC FLIGHT. Input must be the FLIGHT ID and the new hour, separated by a comma. Example: 'SQ279, 14'."),
+        Tool(name="Optimize Single Flight Schedule",
+             func=lambda flight_id: optimize_flight_schedule(flight_id, full_df, avg_delay_df),
+             description="Use this to find a better, less-delayed time for a single, specific flight. The input MUST be the flight ID string (e.g., 'SQ279')."),
+        Tool(name="Find Cascade Flights",
+             func=lambda x: find_top_cascading_flights(full_df).to_markdown(),
+             description="Use this to find the top 10 flights that cause cascading delays. Takes no input."),
+        Tool(name="Get System-Wide Optimization Summary",
+             func=lambda x: pd.DataFrame.from_dict(optimization_summary, orient='index', columns=['Value']).to_markdown(),
+             description="Use this to get the summary of the system-wide optimization, including total delays, savings, and costs. Takes no input.")
     ]
 
-    # 4. Initialize our single, efficient agent
-    agent = initialize_agent(
-        tools,
-        llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True,
-        handle_parsing_errors=True,
-    )
+    agent = initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True, handle_parsing_errors=True)
 
     print("✅ Final, efficient AI Agent is ready.")
-    return agent
+    
+    # Prepare the pre-computed answers dictionary for the UI's safety net
+    precomputed_answers = {
+        "What are the 3 busiest hours?": busiest_df.head(3).to_markdown(),
+        "What are the best hours to fly?": best_df.to_markdown(),
+        "Which flights are the biggest cascade risks?": find_top_cascading_flights(full_df).to_markdown(),
+        "Show me the optimization summary": pd.DataFrame.from_dict(optimization_summary, orient='index', columns=['Value']).to_markdown()
+    }
+    
+    return agent, precomputed_answers
