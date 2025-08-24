@@ -1,77 +1,80 @@
-import os
 import pandas as pd
 from langchain_ollama import OllamaLLM
-from langchain_experimental.agents import create_pandas_dataframe_agent
+from langchain.agents import AgentType, initialize_agent, Tool
+from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 
-# ========================
-# Load CSVs
-# ========================
-OUTDIR = "."  # Files are in current directory
+# Import our new analysis functions from the other script
+from analysis import process_flight_data, predict_delay_for_new_time, find_top_cascading_flights
 
-csv_files = {
-    "avg_delay": "avg_delay_by_hour.csv",
-    "busiest": "busiest_hours.csv", 
-    "best": "best_hours.csv",
-    "cascade": "top_cascade.csv",
-    "recommendations": "schedule_reco_samples.csv"
-}
+print("--- EXECUTING THE FINAL VERSION OF MAKE_REPORT.PY SCRIPT ---")
+print("Running initial analysis to prepare data for the agent...")
 
-dfs = {}
-for key, filename in csv_files.items():
-    path = os.path.join(OUTDIR, filename)
-    if os.path.exists(path):
-        dfs[key] = pd.read_csv(path)
-        print(f"✅ Loaded {filename} ({len(dfs[key])} rows)")
-    else:
-        print(f"⚠️ File not found: {path}")
+# 1. Run the analysis to get the processed dataframes
+full_df, avg_delay_df = process_flight_data()
 
-if not dfs:
-    print("❌ No CSVs loaded! Exiting...")
-    exit(1)
+# Load the other summary dataframes
+busiest_df = pd.read_csv('data/busiest_hours.csv')
+best_df = pd.read_csv('data/best_hours.csv')
 
-# ========================
-# Initialize Ollama LLaMA model
-# ========================
-try:
-    llm = OllamaLLM(model="llama3", temperature=0)
-    print("✅ LLM initialized successfully")
-except Exception as e:
-    print(f"❌ Error initializing LLM: {e}")
-    print("Make sure Ollama is running and llama3 model is installed")
-    exit(1)
+print("\nInitializing AI Agents...")
+# Initialize the local Llama3 model
+llm = OllamaLLM(model="llama3", temperature=0)
 
-# ========================
-# Create Pandas agent
-# ========================
-try:
-    agent = create_pandas_dataframe_agent(
-        llm=llm,
-        df=list(dfs.values()),  # Changed from 'dataframes' to 'df' parameter
-        verbose=True,
-        allow_dangerous_code=True
+# 2. Create the specialized "Data Analyst" agent
+# This agent is given the dataframes and knows how to query them.
+pandas_agent = create_pandas_dataframe_agent(
+    llm=llm,
+    df=[busiest_df, best_df, avg_delay_df], # Pass a list of dataframes
+    verbose=True,
+    allow_dangerous_code=True
+)
+
+# 3. Define the list of tools for our main "Manager" agent
+tools = [
+    # Give the Manager agent access to the Data Analyst agent as a tool
+    Tool(
+        name="Flight Data Analysis",
+        func=pandas_agent.invoke, # Use the specialized agent's invoke method
+        description="""
+        Use this tool for any general questions about flight data, like finding the busiest or best hours, 
+        calculating averages, or counting flights from the provided dataframes.
+        Example: 'What are the 3 busiest hours?'
+        """
+    ),
+    Tool(
+        name="Predict Schedule Impact",
+        # NEW, MORE ROBUST LINE
+        func=lambda hour_str: predict_delay_for_new_time(int("".join(filter(str.isdigit, hour_str))), avg_delay_df),
+        description="Use this to predict the delay if a flight is moved to a new hour. The input is a single integer representing the hour (e.g., '14')."
+    ),
+    Tool(
+        name="Find Cascade Flights",
+        func=lambda empty_str: str(find_top_cascading_flights(full_df)), # Convert output to string
+        description="Use this to find flights that cause major knock-on (cascading) delays. This tool takes no input."
     )
-    print("✅ Agent created successfully")
-except Exception as e:
-    print(f"❌ Error creating agent: {e}")
-    exit(1)
+]
 
-# ========================
-# Interactive Query Loop  
-# ========================
+# 4. Initialize our main "Manager" agent with the complete tool list
+agent = initialize_agent(
+    tools,
+    llm,
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+    verbose=True,
+    handle_parsing_errors=True,
+)
+
+print("✅ AI Manager Agent is ready.")
+
 def main():
     print("\n" + "="*50)
     print("FLIGHT SCHEDULING ANALYSIS ASSISTANT")
     print("="*50)
-    print("\nLoaded datasets:")
-    for key, df in dfs.items():
-        print(f"  - {key}: {len(df)} rows, columns: {list(df.columns)}")
-    
-    print("\nAsk a question about flight schedules (type 'exit' to quit)")
+    print("\nI can answer questions about the flight data or run predictive models.")
     print("Examples:")
-    print("  - What hour has the lowest average delay?")
-    print("  - Which routes are most popular?")
-    print("  - Show me the best hours for scheduling flights")
-    print("\n")
+    print("  - What are the 3 busiest hours?")
+    print("  - Predict the delay for a flight moved to 15:00")
+    print("  - Find the flights that cause the biggest cascading delays")
+    print("\nType 'exit' to quit.")
     
     while True:
         try:
@@ -82,21 +85,15 @@ def main():
             
             if not query.strip():
                 continue
-                
-            print("🤔 Thinking...")
+            
             result = agent.invoke({"input": query})
-            print("\n" + "="*30)
-            print("📊 ANSWER:")
-            print("="*30)
-            print(result.get("output", "No output received"))
-            print("\n")
+            print("\n🤖 Assistant:", result['output'])
             
         except KeyboardInterrupt:
             print("\n\nGoodbye!")
             break
         except Exception as e:
-            print(f"\n⚠️ Error: {e}")
-            print("Please try a different question.\n")
+            print(f"\n⚠️ An error occurred: {e}")
 
 if __name__ == "__main__":
     main()
