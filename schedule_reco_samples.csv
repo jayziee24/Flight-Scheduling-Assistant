@@ -1,0 +1,11 @@
+flight,sched_time_local,origin,destination,recommendation
+QR513,2025-08-10 10:37:00,DEL,BOM,+30 min (target hour 11)
+I5851,2025-08-12 13:43:00,BOM,MAA,+30 min (target hour 14)
+UK163,2025-08-11 10:09:00,PNQ,BOM,+30 min (target hour 11)
+6E689,2025-08-10 13:11:00,BOM,HYD,+30 min (target hour 14)
+QP765,2025-08-14 15:03:00,PNQ,BOM,-30 min (target hour 14)
+UK720,2025-08-13 04:57:00,PNQ,BOM,-30 min (target hour 3)
+UK521,2025-08-11 23:51:00,MAA,BOM,+30 min (target hour 0)
+AI110,2025-08-12 12:44:00,BOM,MAA,+30 min (target hour 13)
+AI968,2025-08-12 11:53:00,BOM,MAA,+30 min (target hour 12)
+QR382,2025-08-11 21:08:00,BOM,LHR,+30 min (target hour 22)
